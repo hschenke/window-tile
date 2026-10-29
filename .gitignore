@@ -1,0 +1,8 @@
+# Temporary / scratch files
+*.tmp
+*.log
+*.suo
+*.user
+
+# Build output
+*.pdb
