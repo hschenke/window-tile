@@ -26,6 +26,7 @@ Optimized for multi-monitor setups and **ultrawide screens** (e.g. 3440 × 1440)
   * Column 2: Warm Coral / Orange (`#F97316`)
   * Column 3: Emerald Green (`#10B981`)
   * High-contrast borders designed to look crisp on both dark and light Windows 11 themes.
+* **🔄 Taskbar-Synchronized Ordering:** Automatically tracks window creation sequence (`RegisterShellHookWindow`) to match the exact left-to-right order of Windows 11 taskbar thumbnail previews. Clicking the leftmost thumbnail activates the leftmost window on your monitor, with zero spatial mismatch.
 * **📐 Pixel-Perfect Alignment (DWM Shadow Correction):** Automatically queries Windows 11 `DwmGetWindowAttribute` (`DWMWA_EXTENDED_FRAME_BOUNDS`) to compensate for invisible drop-shadow borders, preventing unwanted gaps or overlapping edges.
 * **🖥️ Display & Taskbar Aware:** Reads the working area of the monitor currently hosting the focused window, ensuring the taskbar is never covered.
 * **🛡️ Collision & Conflict Detection:** Checks every hotkey registration via `RegisterHotKey`. If a shortcut is already claimed by another program, a clear notification alerts you immediately.

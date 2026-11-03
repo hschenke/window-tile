@@ -332,6 +332,69 @@ namespace WindowTileTool
     }
 
     /// <summary>
+    /// Verfolgt die Erstellungsreihenfolge von Fenstern synchron zur Windows-Taskleiste (FIFO).
+    /// Dadurch stimmen die Positionen auf dem Monitor 1:1 mit den Taskleisten-Thumbnails überein.
+    /// </summary>
+    internal static class WindowOrderTracker
+    {
+        private static readonly object _sync = new object();
+        private static readonly Dictionary<IntPtr, long> _sequenceMap = new Dictionary<IntPtr, long>();
+        private static long _counter = 0;
+
+        public static void RegisterWindow(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return;
+            lock (_sync)
+            {
+                if (!_sequenceMap.ContainsKey(hWnd))
+                {
+                    _sequenceMap[hWnd] = ++_counter;
+                }
+            }
+        }
+
+        public static void UnregisterWindow(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return;
+            lock (_sync)
+            {
+                _sequenceMap.Remove(hWnd);
+            }
+        }
+
+        public static long GetSequence(IntPtr hWnd)
+        {
+            lock (_sync)
+            {
+                long seq;
+                if (_sequenceMap.TryGetValue(hWnd, out seq))
+                {
+                    return seq;
+                }
+                return long.MaxValue;
+            }
+        }
+
+        public static void EnsureRegistered(List<IntPtr> zOrderTopToBottom)
+        {
+            lock (_sync)
+            {
+                // In EnumWindows (Z-Order von oben nach unten) liegt das älteste Fenster GANZ UNTEN.
+                // Das Windows-Taskleisten-FIFO ordnet das älteste Fenster ganz links ein.
+                // Daher weisen wir von unten nach oben (ältester zu neuester) fortlaufende Sequenzen zu.
+                for (int i = zOrderTopToBottom.Count - 1; i >= 0; i--)
+                {
+                    IntPtr h = zOrderTopToBottom[i];
+                    if (!_sequenceMap.ContainsKey(h))
+                    {
+                        _sequenceMap[h] = ++_counter;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Unsichtbares Nachrichtenfenster zum Registrieren und Abfangen globaler Windows-Hotkeys.
     /// </summary>
     internal class HotKeyWindow : NativeWindow, IDisposable
@@ -342,12 +405,23 @@ namespace WindowTileTool
         private const int MOD_WIN = 0x0008;
         private const int MOD_NOREPEAT = 0x4000;
 
+        private const int HSHELL_WINDOWCREATED = 1;
+        private const int HSHELL_WINDOWDESTROYED = 2;
+
         private readonly List<HotKeyStatus> _statuses = new List<HotKeyStatus>();
         private readonly List<int> _activeIds = new List<int>();
+        private readonly uint _shellHookMsg;
 
         public HotKeyWindow()
         {
             CreateHandle(new CreateParams());
+
+            _shellHookMsg = NativeMethods.RegisterWindowMessage("SHELLHOOK");
+            if (_shellHookMsg != 0)
+            {
+                NativeMethods.RegisterShellHookWindow(Handle);
+            }
+
             RegisterAllHotKeys();
         }
 
@@ -415,11 +489,29 @@ namespace WindowTileTool
                         break;
                 }
             }
+            else if (_shellHookMsg != 0 && (uint)m.Msg == _shellHookMsg)
+            {
+                int shellEvent = m.WParam.ToInt32();
+                IntPtr targetHwnd = m.LParam;
+                if (shellEvent == HSHELL_WINDOWCREATED)
+                {
+                    WindowOrderTracker.RegisterWindow(targetHwnd);
+                }
+                else if (shellEvent == HSHELL_WINDOWDESTROYED)
+                {
+                    WindowOrderTracker.UnregisterWindow(targetHwnd);
+                }
+            }
             base.WndProc(ref m);
         }
 
         public void Dispose()
         {
+            if (_shellHookMsg != 0)
+            {
+                NativeMethods.DeregisterShellHookWindow(Handle);
+            }
+
             foreach (int id in _activeIds)
             {
                 NativeMethods.UnregisterHotKey(Handle, id);
@@ -454,6 +546,18 @@ namespace WindowTileTool
             {
                 return;
             }
+
+            // Sicherstellen, dass alle Fenster erfasst sind (chronologische Zuordnung)
+            var handleList = new List<IntPtr>();
+            foreach (var win in candidateWindows)
+            {
+                handleList.Add(win.Handle);
+            }
+            WindowOrderTracker.EnsureRegistered(handleList);
+
+            // Nach Erstellungsreihenfolge sortieren (Ältestes Fenster = Spalte 0 / ganz links).
+            // Entspricht exakt der Taskleisten-Vorschau von links nach rechts.
+            candidateWindows.Sort((a, b) => WindowOrderTracker.GetSequence(a.Handle).CompareTo(WindowOrderTracker.GetSequence(b.Handle)));
 
             int actualColumns = Math.Min(columnCount, candidateWindows.Count);
             int baseColumnWidth = workingArea.Width / actualColumns;
@@ -593,7 +697,7 @@ namespace WindowTileTool
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW);
         }
 
-        private class WindowItem
+        public class WindowItem
         {
             public IntPtr Handle;
             public string Title;
@@ -692,5 +796,14 @@ namespace WindowTileTool
 
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         public static extern bool DestroyIcon(IntPtr handle);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool RegisterShellHookWindow(IntPtr hwnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool DeregisterShellHookWindow(IntPtr hwnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        public static extern uint RegisterWindowMessage(string lpString);
     }
 }

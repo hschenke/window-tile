@@ -53,6 +53,14 @@ TileWindows(columnCount)
     if (candidateList.Length < 2)
         return
 
+    ; WinGetList() liefert Z-Order von oben nach unten (neuestes/aktives Fenster zuerst).
+    ; Die Windows-Taskleiste ordnet Thumbnails jedoch chronologisch (FIFO: ältestes zuerst = links).
+    ; Durch Umkehren der Liste entspricht Spalte 0 (links) exakt dem linken Taskleisten-Thumbnail.
+    reversedList := []
+    Loop candidateList.Length
+        reversedList.Push(candidateList[candidateList.Length - A_Index + 1])
+    candidateList := reversedList
+
     actualCols := Min(columnCount, candidateList.Length)
 
     for index, hwnd in candidateList
