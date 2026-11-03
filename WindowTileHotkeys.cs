@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -59,11 +62,17 @@ namespace WindowTileTool
         private readonly HotKeyWindow _hotKeyWindow;
         private readonly Icon _customIcon;
         private readonly ToolStripMenuItem _autostartMenuItem;
+        private readonly SynchronizationContext _syncContext;
+        private UpdateManager.UpdateInfo _pendingUpdate;
 
         public TrayApplicationContext()
         {
+            _syncContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
             _hotKeyWindow = new HotKeyWindow();
             _customIcon = IconFactory.CreateTileGridIcon();
+
+            // Bereinige eventuelle Reste vorheriger Updates
+            UpdateManager.CleanOldExecutable();
 
             var contextMenu = new ContextMenuStrip();
 
@@ -75,6 +84,7 @@ namespace WindowTileTool
             contextMenu.Items.Add(titleItem);
 
             contextMenu.Items.Add("Tastenbelegung / Status prüfen...", null, (s, e) => ShowStatusDialog());
+            contextMenu.Items.Add("Nach Updates suchen...", null, (s, e) => CheckForUpdates(isSilent: false));
             contextMenu.Items.Add(new ToolStripSeparator());
 
             contextMenu.Items.Add("2 Fenster anordnen (Win+Alt+Strg+2)", null, (s, e) => WindowTiler.TileWindows(2));
@@ -98,12 +108,114 @@ namespace WindowTileTool
             {
                 Icon = _customIcon,
                 ContextMenuStrip = contextMenu,
-                Text = "Window Tile (Win + Alt + Strg + 2/3/4)",
+                Text = "Window Tile v" + UpdateManager.CurrentVersion + " (Win + Alt + Strg + 2/3/4)",
                 Visible = true
+            };
+
+            _notifyIcon.BalloonTipClicked += (s, e) =>
+            {
+                if (_pendingUpdate != null && _pendingUpdate.Available)
+                {
+                    PromptAndApplyUpdate(_pendingUpdate);
+                }
             };
 
             // Status beim Start prüfen und Benachrichtigung kompakt anzeigen
             ShowStartupNotification();
+
+            // Automatische Update-Prüfung im Hintergrund nach 3 Sekunden starten
+            ThreadPool.QueueUserWorkItem(state =>
+            {
+                Thread.Sleep(3000);
+                CheckForUpdates(isSilent: true);
+            });
+        }
+
+        private void CheckForUpdates(bool isSilent)
+        {
+            ThreadPool.QueueUserWorkItem(state =>
+            {
+                var update = UpdateManager.CheckForUpdate();
+
+                _syncContext.Post(_ =>
+                {
+                    if (update.Available)
+                    {
+                        _pendingUpdate = update;
+                        if (isSilent)
+                        {
+                            _notifyIcon.ShowBalloonTip(
+                                5000,
+                                "Update verfügbar!",
+                                "Version " + update.LatestTag + " ist auf GitHub verfügbar.\nHier klicken zum Aktualisieren.",
+                                ToolTipIcon.Info);
+                        }
+                        else
+                        {
+                            PromptAndApplyUpdate(update);
+                        }
+                    }
+                    else if (!isSilent)
+                    {
+                        if (!string.IsNullOrEmpty(update.ErrorMessage))
+                        {
+                            MessageBox.Show(
+                                "Fehler beim Prüfen auf Updates:\n" + update.ErrorMessage,
+                                "Update-Prüfung fehlgeschlagen",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Warning);
+                        }
+                        else
+                        {
+                            MessageBox.Show(
+                                "Window Tile ist mit Version v" + UpdateManager.CurrentVersion + " bereits auf dem neuesten Stand.",
+                                "Kein Update erforderlich",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                        }
+                    }
+                }, null);
+            });
+        }
+
+        private void PromptAndApplyUpdate(UpdateManager.UpdateInfo update)
+        {
+            string msg = string.Format(
+                "Eine neuere Version von Window Tile ist auf GitHub verfügbar!\n\n" +
+                "Installierte Version: v{0}\n" +
+                "Verfügbare Version:   {1}\n\n" +
+                "Möchten Sie das Update jetzt automatisch herunterladen und installieren?",
+                UpdateManager.CurrentVersion,
+                update.LatestTag);
+
+            var choice = MessageBox.Show(msg, "Window Tile - Update verfügbar", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (choice == DialogResult.Yes)
+            {
+                _notifyIcon.ShowBalloonTip(2000, "Window Tile Update", "Update wird heruntergeladen und installiert...", ToolTipIcon.Info);
+
+                ThreadPool.QueueUserWorkItem(state =>
+                {
+                    string error;
+                    bool success = UpdateManager.ApplyUpdate(update.DownloadUrl, out error);
+
+                    _syncContext.Post(_ =>
+                    {
+                        if (success)
+                        {
+                            // Neue Version wurde gestartet, diese Instanz beenden
+                            ExitThread();
+                        }
+                        else
+                        {
+                            MessageBox.Show(
+                                "Das automatische Update ist fehlgeschlagen:\n" + error,
+                                "Update-Fehler",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Error);
+                        }
+                    }, null);
+                });
+            }
         }
 
         private void ToggleAutostart()
@@ -173,6 +285,7 @@ namespace WindowTileTool
         {
             var statuses = _hotKeyWindow.GetStatuses();
             var sb = new StringBuilder();
+            sb.AppendLine("Window Tile v" + UpdateManager.CurrentVersion);
             sb.AppendLine("Aktueller Status der Tastenkombinationen:\n");
 
             foreach (var s in statuses)
@@ -191,7 +304,7 @@ namespace WindowTileTool
             }
 
             sb.AppendLine("\nAutostart mit Windows: " + (AutostartManager.IsEnabled() ? "Aktiviert" : "Deaktiviert"));
-            sb.AppendLine("\nTipp: Rechtsklick auf das Taskleisten-Icon erlaubt manuelles Ausführen, Autostart-Umschalten und Beenden.");
+            sb.AppendLine("\nTipp: Rechtsklick auf das Taskleisten-Icon erlaubt manuelles Ausführen, Update-Prüfung und Beenden.");
 
             MessageBox.Show(
                 sb.ToString(),
@@ -257,6 +370,180 @@ namespace WindowTileTool
             {
                 return false;
             }
+        }
+    }
+
+    /// <summary>
+    /// Prüft und installiert Updates direkt von GitHub Releases (analog zum Konzept in backup-holli).
+    /// </summary>
+    internal static class UpdateManager
+    {
+        public const string CurrentVersion = "0.1.2";
+        public const string GitHubRepo = "hschenke/window-tile";
+        private const string ReleasesApiUrl = "https://api.github.com/repos/" + GitHubRepo + "/releases/latest";
+
+        public class UpdateInfo
+        {
+            public bool Available { get; set; }
+            public string LatestTag { get; set; }
+            public string DownloadUrl { get; set; }
+            public string ErrorMessage { get; set; }
+        }
+
+        public static void CleanOldExecutable()
+        {
+            try
+            {
+                string oldPath = Application.ExecutablePath + ".old";
+                if (File.Exists(oldPath))
+                {
+                    File.Delete(oldPath);
+                }
+            }
+            catch { }
+        }
+
+        public static UpdateInfo CheckForUpdate()
+        {
+            var info = new UpdateInfo();
+            try
+            {
+                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // Tls12
+                using (var client = new WebClient())
+                {
+                    client.Headers.Add("User-Agent", "WindowTileHotkeys/" + CurrentVersion);
+                    string json = client.DownloadString(ReleasesApiUrl);
+
+                    var tagMatch = Regex.Match(json, @"""tag_name""\s*:\s*""([^""]+)""");
+                    var assetMatch = Regex.Match(json, @"""browser_download_url""\s*:\s*""([^""]+WindowTileHotkeys\.exe)""");
+
+                    if (!tagMatch.Success)
+                    {
+                        info.ErrorMessage = "Versions-Tag auf GitHub nicht gefunden.";
+                        return info;
+                    }
+
+                    string latestTag = tagMatch.Groups[1].Value.Trim();
+                    info.LatestTag = latestTag;
+                    info.DownloadUrl = assetMatch.Success ? assetMatch.Groups[1].Value : null;
+
+                    Version localVer = ParseVersion(CurrentVersion);
+                    Version remoteVer = ParseVersion(latestTag);
+
+                    if (remoteVer > localVer)
+                    {
+                        info.Available = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                info.ErrorMessage = ex.Message;
+            }
+
+            return info;
+        }
+
+        public static bool ApplyUpdate(string downloadUrl, out string errorMessage)
+        {
+            errorMessage = null;
+            if (string.IsNullOrEmpty(downloadUrl))
+            {
+                errorMessage = "Keine Download-URL für die ausführbare Datei gefunden.";
+                return false;
+            }
+
+            string currentExe = Application.ExecutablePath;
+            string appDir = Path.GetDirectoryName(currentExe);
+            string tempNewExe = Path.Combine(appDir, "WindowTileHotkeys.exe.new");
+            string backupOldExe = currentExe + ".old";
+
+            try
+            {
+                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
+                using (var client = new WebClient())
+                {
+                    client.Headers.Add("User-Agent", "WindowTileHotkeys/" + CurrentVersion);
+                    client.DownloadFile(downloadUrl, tempNewExe);
+                }
+
+                if (!File.Exists(tempNewExe) || new FileInfo(tempNewExe).Length < 1000)
+                {
+                    errorMessage = "Heruntergeladene Datei ist unvollständig oder beschädigt.";
+                    return false;
+                }
+
+                // Falls ein Git-Repository vorliegt, optional Git-Pull ausführen, um auch Quellcode aktuell zu halten
+                TryGitPull(appDir);
+
+                // Windows Atomic Replace:
+                // Laufende Exe kann nicht überschrieben, aber umbenannt werden!
+                if (File.Exists(backupOldExe))
+                {
+                    File.Delete(backupOldExe);
+                }
+
+                File.Move(currentExe, backupOldExe);
+                File.Move(tempNewExe, currentExe);
+
+                // Neue Version starten
+                Process.Start(currentExe);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                errorMessage = ex.Message;
+                // Rollback falls tempNewExe existiert aber nicht verschoben wurde
+                try
+                {
+                    if (File.Exists(tempNewExe)) File.Delete(tempNewExe);
+                    if (!File.Exists(currentExe) && File.Exists(backupOldExe))
+                    {
+                        File.Move(backupOldExe, currentExe);
+                    }
+                }
+                catch { }
+                return false;
+            }
+        }
+
+        private static void TryGitPull(string appDir)
+        {
+            try
+            {
+                string gitDir = Path.Combine(appDir, ".git");
+                if (Directory.Exists(gitDir))
+                {
+                    var psi = new ProcessStartInfo("git", "pull origin main")
+                    {
+                        WorkingDirectory = appDir,
+                        CreateNoWindow = true,
+                        UseShellExecute = false
+                    };
+                    using (var p = Process.Start(psi))
+                    {
+                        p.WaitForExit(5000);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static Version ParseVersion(string tag)
+        {
+            if (string.IsNullOrEmpty(tag)) return new Version(0, 0);
+            string cleaned = tag.Trim().TrimStart('v', 'V');
+            Version v;
+            if (Version.TryParse(cleaned, out v))
+            {
+                return v;
+            }
+            string[] parts = cleaned.Split('.');
+            if (parts.Length == 2)
+            {
+                if (Version.TryParse(cleaned + ".0", out v)) return v;
+            }
+            return new Version(0, 0);
         }
     }
 

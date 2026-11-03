@@ -27,6 +27,7 @@ Optimized for multi-monitor setups and **ultrawide screens** (e.g. 3440 × 1440)
   * Column 3: Emerald Green (`#10B981`)
   * High-contrast borders designed to look crisp on both dark and light Windows 11 themes.
 * **🔄 Taskbar-Synchronized Ordering:** Automatically tracks window creation sequence (`RegisterShellHookWindow`) to match the exact left-to-right order of Windows 11 taskbar thumbnail previews. Clicking the leftmost thumbnail activates the leftmost window on your monitor, with zero spatial mismatch.
+* **🚀 Automatic GitHub Updates:** Non-intrusive background check on startup (and manual check via tray menu). If a newer version is released on GitHub, a notification prompts you to update automatically with a single click.
 * **📐 Pixel-Perfect Alignment (DWM Shadow Correction):** Automatically queries Windows 11 `DwmGetWindowAttribute` (`DWMWA_EXTENDED_FRAME_BOUNDS`) to compensate for invisible drop-shadow borders, preventing unwanted gaps or overlapping edges.
 * **🖥️ Display & Taskbar Aware:** Reads the working area of the monitor currently hosting the focused window, ensuring the taskbar is never covered.
 * **🛡️ Collision & Conflict Detection:** Checks every hotkey registration via `RegisterHotKey`. If a shortcut is already claimed by another program, a clear notification alerts you immediately.
@@ -60,6 +61,7 @@ No IDE or external SDK download needed! Windows 10/11 already includes the .NET 
 Right-click the **Window Tile** icon in the Windows taskbar tray (near the clock) to access:
 
 * **Check Hotkey Status...**: Displays a dialog showing whether each shortcut is currently active or blocked.
+* **Check for Updates...**: Manually checks GitHub for newer releases and offers a 1-click update.
 * **Tile 2 / 3 / 4 Windows**: Trigger tiling manually from the menu.
 * **Start with Windows**: Toggle automatic startup on system boot.
 * **Exit**: Cleanly unregister all global hotkeys and close the application.
